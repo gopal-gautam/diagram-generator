@@ -7,24 +7,6 @@ dist/
 build/
 target/
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.py.class
-.Python
-env/
-venv/
-.venv/
-.ENV
-.python-version
-.pytest_cache/
-.mypy_cache/
-.coverage
-coverage/
-htmlcov/
-
 # Logs
 *.log
 
