@@ -1,8 +1,8 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react'
 
-type Tool = 'select' | 'connect' | 'rect' | 'circle' | 'diamond' | 'text'
+type Tool = 'select' | 'connect' | 'rect' | 'circle' | 'diamond' | 'text' | 'triangle' | 'hexagon' | 'line' | 'draw'
 type LineStyle = 'straight' | 'curved' | 'elbow'
-type NodeShape = 'rect' | 'circle' | 'diamond' | 'svg' | 'text'
+type NodeShape = 'rect' | 'circle' | 'diamond' | 'svg' | 'text' | 'triangle' | 'hexagon'
 
 interface DiagramNode {
   id: string
@@ -33,6 +33,13 @@ interface Connection {
   strokeWidth: number
   arrowEnd: boolean
   arrowStart: boolean
+}
+
+interface FreeLine {
+  id: string
+  points: { x: number; y: number }[]
+  color: string
+  strokeWidth: number
 }
 
 interface Viewport { x: number; y: number; scale: number }
@@ -118,6 +125,7 @@ function Sec({ title, children }: { title: string; children: React.ReactNode }) 
 export default function DiagramCreator() {
   const [nodes, setNodes] = useState<DiagramNode[]>([])
   const [conns, setConns] = useState<Connection[]>([])
+  const [freeLines, setFreeLines] = useState<FreeLine[]>([])
   const [selIds, setSelIds] = useState<Set<string>>(new Set())
   const [selConnId, setSelConnId] = useState<string | null>(null)
   const [tool, setTool] = useState<Tool>('select')
@@ -133,12 +141,13 @@ export default function DiagramCreator() {
   const svgRef = useRef<SVGSVGElement>(null)
   const dragging = useRef(false)
   const dragInfo = useRef<{
-    type: 'node' | 'canvas' | 'resize' | 'select'
+    type: 'node' | 'canvas' | 'resize' | 'select' | 'draw' | 'line'
     id?: string; handle?: string
     startX: number; startY: number
     ox?: number; oy?: number; ow?: number; oh?: number
     initialSelIds?: Set<string>
     nodeStartPositions?: Map<string, { x: number; y: number }>
+    lineStartPoint?: { x: number; y: number }
   } | null>(null)
 
   const selId = selIds.size === 1 ? Array.from(selIds)[0] : null
@@ -155,8 +164,8 @@ export default function DiagramCreator() {
     const maxZ = nodes.reduce((m, n) => Math.max(m, n.zIndex), 0)
     const defaults: DiagramNode = {
       id, shape, x, y,
-      width: shape === 'circle' ? 100 : shape === 'text' ? 140 : 160,
-      height: shape === 'circle' ? 100 : shape === 'text' ? 36 : shape === 'diamond' ? 80 : 80,
+      width: shape === 'circle' || shape === 'hexagon' ? 100 : shape === 'text' ? 140 : 160,
+      height: shape === 'circle' || shape === 'hexagon' ? 100 : shape === 'text' ? 36 : shape === 'diamond' || shape === 'triangle' ? 80 : 80,
       label: shape === 'text' ? 'Label' : '',
       fill: shape === 'text' ? 'transparent' : '#1b1b2e',
       stroke: shape === 'text' ? 'transparent' : '#3a4a6a',
@@ -167,6 +176,23 @@ export default function DiagramCreator() {
     setSelIds(new Set([id])); setSelConnId(null)
     return id
   }, [nodes])
+
+  const duplicateSelected = useCallback(() => {
+    if (selIds.size !== 1) return
+    const node = nodes.find(n => n.id === selId)
+    if (!node) return
+    const newId = uid()
+    const maxZ = nodes.reduce((m, n) => Math.max(m, n.zIndex), 0)
+    const newNode: DiagramNode = {
+      ...node,
+      id: newId,
+      x: node.x + 20,
+      y: node.y + 20,
+      zIndex: maxZ + 1
+    }
+    setNodes(prev => [...prev, newNode])
+    setSelIds(new Set([newId]))
+  }, [selIds, selId, nodes])
 
   const upNode = useCallback((id: string, u: Partial<DiagramNode>) =>
     setNodes(prev => prev.map(n => n.id === id ? { ...n, ...u } : n)), [])
@@ -183,6 +209,18 @@ export default function DiagramCreator() {
     }
     if (selConnId) { setConns(p => p.filter(c => c.id !== selConnId)); setSelConnId(null) }
   }, [selIds, selConnId])
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (e.key === 'd' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault()
+        duplicateSelected()
+      }
+    }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [duplicateSelected])
 
   const bringFront = useCallback(() => {
     if (selIds.size === 0) return
@@ -267,12 +305,20 @@ export default function DiagramCreator() {
           setConnecting(null); setTool('select')
         }
       } else { setConnecting(null) }
-    } else if (['rect', 'circle', 'diamond'].includes(tool)) {
+    } else if (['rect', 'circle', 'diamond', 'triangle', 'hexagon'].includes(tool)) {
       addNode(tool as NodeShape, cp.x - 80, cp.y - 40)
       setTool('select')
     } else if (tool === 'text') {
       addNode('text', cp.x - 70, cp.y - 18)
       setTool('select')
+    } else if (tool === 'line') {
+      dragInfo.current = { type: 'line', startX: cp.x, startY: cp.y, lineStartPoint: { x: cp.x, y: cp.y } }
+      dragging.current = true
+    } else if (tool === 'draw') {
+      const newLine: FreeLine = { id: uid(), points: [{ x: cp.x, y: cp.y }], color: '#d4b84a', strokeWidth: 2 }
+      setFreeLines(prev => [...prev, newLine])
+      dragInfo.current = { type: 'draw', id: newLine.id, startX: cp.x, startY: cp.y }
+      dragging.current = true
     }
   }, [tool, toCanvas, nodes, selIds, vp, connecting, addNode, selId])
 
@@ -313,6 +359,12 @@ export default function DiagramCreator() {
         }
       })
       setSelIds(selectedInBox)
+    } else if (info.type === 'line' && info.lineStartPoint) {
+      // Live line preview
+    } else if (info.type === 'draw' && info.id) {
+      setFreeLines(prev => prev.map(line =>
+        line.id === info.id ? { ...line, points: [...line.points, { x: cp.x, y: cp.y }] } : line
+      ))
     }
   }, [toCanvas, upNode, nodes])
 
@@ -411,6 +463,11 @@ export default function DiagramCreator() {
     const { shape, width: w, height: h, fill, stroke, strokeWidth, borderRadius } = node
     if (shape === 'circle') return <ellipse cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
     if (shape === 'diamond') return <polygon points={`${w / 2},0 ${w},${h / 2} ${w / 2},${h} 0,${h / 2}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+    if (shape === 'triangle') return <polygon points={`${w / 2},0 ${w},${h} 0,${h}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+    if (shape === 'hexagon') {
+      const hw = w / 2, hh = h / 2
+      return <polygon points={`${hw},0 ${w * 0.75},${hh} ${w * 0.75},${h} ${hw},${h} ${w * 0.25},${h} ${w * 0.25},${hh} 0,${hh}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+    }
     if (shape === 'svg' && node.svgContent) {
       // Parse SVG and apply transform for scaling
       try {
@@ -469,7 +526,11 @@ export default function DiagramCreator() {
           {toolBtn('rect', 'Rect')}
           {toolBtn('circle', 'Circle')}
           {toolBtn('diamond', 'Diamond')}
+          {toolBtn('triangle', 'Triangle')}
+          {toolBtn('hexagon', 'Hexagon')}
           {toolBtn('text', 'Text')}
+          {toolBtn('line', 'Line')}
+          {toolBtn('draw', 'Draw')}
           <button onClick={() => setSvgModal(true)} style={{ padding: '5px 13px', fontSize: 11, cursor: 'pointer', fontFamily: '"JetBrains Mono", monospace', background: '#151520', color: '#6a7a8a', border: '1px solid #252535', borderRadius: 3 }}>Paste SVG</button>
         </div>
         <div style={{ flex: 1 }} />
@@ -557,6 +618,18 @@ export default function DiagramCreator() {
               if (!fn) return null
               return <line x1={fn.x + fn.width / 2} y1={fn.y + fn.height / 2} x2={mPos.x} y2={mPos.y} stroke="#d4b84a" strokeWidth={1.5} strokeDasharray="5,3" style={{ pointerEvents: 'none' }} />
             })()}
+
+            {/* Live line drawing */}
+            {dragInfo.current?.type === 'line' && dragInfo.current.lineStartPoint && (
+              <line x1={dragInfo.current.lineStartPoint.x} y1={dragInfo.current.lineStartPoint.y} x2={mPos.x} y2={mPos.y} stroke="#d4b84a" strokeWidth={2} strokeDasharray="5,3" style={{ pointerEvents: 'none' }} />
+            )}
+
+            {/* Freehand lines */}
+            {freeLines.map(line => {
+              if (line.points.length < 2) return null
+              const d = line.points.map((p, i) => (i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`)).join(' ')
+              return <path key={line.id} d={d} fill="none" stroke={line.color} strokeWidth={line.strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+            })}
 
             {/* Nodes */}
             {sortedNodes.map(node => {
