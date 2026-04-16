@@ -118,7 +118,7 @@ function Sec({ title, children }: { title: string; children: React.ReactNode }) 
 export default function DiagramCreator() {
   const [nodes, setNodes] = useState<DiagramNode[]>([])
   const [conns, setConns] = useState<Connection[]>([])
-  const [selId, setSelId] = useState<string | null>(null)
+  const [selIds, setSelIds] = useState<Set<string>>(new Set())
   const [selConnId, setSelConnId] = useState<string | null>(null)
   const [tool, setTool] = useState<Tool>('select')
   const [vp, setVp] = useState<Viewport>({ x: 0, y: 0, scale: 1 })
@@ -128,16 +128,20 @@ export default function DiagramCreator() {
   const [svgInput, setSvgInput] = useState('')
   const [editLabel, setEditLabel] = useState<string | null>(null)
   const [editConnLabel, setEditConnLabel] = useState<string | null>(null)
+  const [selectionBox, setSelectionBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
 
   const svgRef = useRef<SVGSVGElement>(null)
   const dragging = useRef(false)
   const dragInfo = useRef<{
-    type: 'node' | 'canvas' | 'resize'
+    type: 'node' | 'canvas' | 'resize' | 'select'
     id?: string; handle?: string
     startX: number; startY: number
     ox?: number; oy?: number; ow?: number; oh?: number
+    initialSelIds?: Set<string>
+    nodeStartPositions?: Map<string, { x: number; y: number }>
   } | null>(null)
 
+  const selId = selIds.size === 1 ? Array.from(selIds)[0] : null
   const selNode = nodes.find(n => n.id === selId) ?? null
   const selConn = conns.find(c => c.id === selConnId) ?? null
 
@@ -160,7 +164,7 @@ export default function DiagramCreator() {
       zIndex: maxZ + 1, fontSize: 13, fontColor: '#c8d8f0', fontWeight: 'normal', ...opts,
     }
     setNodes(prev => [...prev, defaults])
-    setSelId(id); setSelConnId(null)
+    setSelIds(new Set([id])); setSelConnId(null)
     return id
   }, [nodes])
 
@@ -171,21 +175,26 @@ export default function DiagramCreator() {
     setConns(prev => prev.map(c => c.id === id ? { ...c, ...u } : c)), [])
 
   const delSelected = useCallback(() => {
-    if (selId) { setNodes(p => p.filter(n => n.id !== selId)); setConns(p => p.filter(c => c.fromId !== selId && c.toId !== selId)); setSelId(null) }
+    if (selIds.size > 0) {
+      const idsToDelete = Array.from(selIds)
+      setNodes(p => p.filter(n => !idsToDelete.includes(n.id)))
+      setConns(p => p.filter(c => !idsToDelete.includes(c.fromId) && !idsToDelete.includes(c.toId)))
+      setSelIds(new Set())
+    }
     if (selConnId) { setConns(p => p.filter(c => c.id !== selConnId)); setSelConnId(null) }
-  }, [selId, selConnId])
+  }, [selIds, selConnId])
 
   const bringFront = useCallback(() => {
-    if (!selId) return
+    if (selIds.size === 0) return
     const maxZ = nodes.reduce((m, n) => Math.max(m, n.zIndex), 0)
-    upNode(selId, { zIndex: maxZ + 1 })
-  }, [selId, nodes, upNode])
+    setNodes(prev => prev.map(n => selIds.has(n.id) ? { ...n, zIndex: maxZ + 1 } : n))
+  }, [selIds, nodes])
 
   const sendBack = useCallback(() => {
-    if (!selId) return
+    if (selIds.size === 0) return
     const minZ = nodes.reduce((m, n) => Math.min(m, n.zIndex), 0)
-    upNode(selId, { zIndex: minZ - 1 })
-  }, [selId, nodes, upNode])
+    setNodes(prev => prev.map(n => selIds.has(n.id) ? { ...n, zIndex: minZ - 1 } : n))
+  }, [selIds, nodes])
 
   const handleMouseDown = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
     if (e.button !== 0) return
@@ -194,21 +203,61 @@ export default function DiagramCreator() {
     const nodeId = target.closest('[data-node-id]')?.getAttribute('data-node-id') ?? null
     const handleType = target.getAttribute('data-handle')
     const isConn = target.closest('[data-is-conn]') !== null
+    const isCtrl = e.ctrlKey || e.metaKey
+    const isShift = e.shiftKey || e.key === ' '
 
     if (tool === 'select') {
-      if (handleType && selId) {
+      if (handleType && selIds.size === 1) {
         const node = nodes.find(n => n.id === selId)!
         dragInfo.current = { type: 'resize', id: selId, handle: handleType, startX: cp.x, startY: cp.y, ox: node.x, oy: node.y, ow: node.width, oh: node.height }
         dragging.current = true; e.preventDefault()
       } else if (nodeId) {
         const node = nodes.find(n => n.id === nodeId)!
-        setSelId(nodeId); setSelConnId(null)
-        dragInfo.current = { type: 'node', id: nodeId, startX: cp.x, startY: cp.y, ox: node.x, oy: node.y }
+        if (isCtrl) {
+          // Toggle selection with Ctrl+Click
+          const newSel = new Set(selIds)
+          if (newSel.has(nodeId)) {
+            newSel.delete(nodeId)
+          } else {
+            newSel.add(nodeId)
+          }
+          setSelIds(newSel)
+        } else if (!selIds.has(nodeId)) {
+          // Click on unselected node - select only this one
+          setSelIds(new Set([nodeId]))
+          setSelConnId(null)
+        }
+        // Start dragging all selected nodes
+        const initialSelIds = selIds.has(nodeId) ? selIds : new Set([nodeId])
+        const nodeStartPositions = new Map<string, { x: number; y: number }>()
+        initialSelIds.forEach(id => {
+          const n = nodes.find(n => n.id === id)
+          if (n) nodeStartPositions.set(id, { x: n.x, y: n.y })
+        })
+        dragInfo.current = { 
+          type: 'node', 
+          id: nodeId, 
+          startX: cp.x, 
+          startY: cp.y, 
+          initialSelIds,
+          nodeStartPositions
+        }
         dragging.current = true; e.preventDefault()
       } else if (!isConn) {
-        setSelId(null); setSelConnId(null)
-        dragInfo.current = { type: 'canvas', startX: e.clientX, startY: e.clientY, ox: vp.x, oy: vp.y }
-        dragging.current = true
+        // Click on background - start selection box or pan with shift/space
+        if (isShift) {
+          setSelIds(new Set())
+          setSelConnId(null)
+          dragInfo.current = { type: 'canvas', startX: e.clientX, startY: e.clientY, ox: vp.x, oy: vp.y }
+          dragging.current = true
+        } else {
+          // Start selection box for multi-select
+          setSelIds(new Set())
+          setSelConnId(null)
+          dragInfo.current = { type: 'select', startX: cp.x, startY: cp.y }
+          setSelectionBox({ x: cp.x, y: cp.y, w: 0, h: 0 })
+          dragging.current = true
+        }
       }
     } else if (tool === 'connect') {
       if (nodeId) {
@@ -225,7 +274,7 @@ export default function DiagramCreator() {
       addNode('text', cp.x - 70, cp.y - 18)
       setTool('select')
     }
-  }, [tool, toCanvas, nodes, selId, vp, connecting, addNode])
+  }, [tool, toCanvas, nodes, selIds, vp, connecting, addNode, selId])
 
   const handleMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
     const cp = toCanvas(e.clientX, e.clientY)
@@ -234,8 +283,13 @@ export default function DiagramCreator() {
     const info = dragInfo.current
     if (info.type === 'canvas') {
       setVp(prev => ({ ...prev, x: info.ox! + (e.clientX - info.startX), y: info.oy! + (e.clientY - info.startY) }))
-    } else if (info.type === 'node' && info.id) {
-      upNode(info.id, { x: info.ox! + cp.x - info.startX, y: info.oy! + cp.y - info.startY })
+    } else if (info.type === 'node' && info.nodeStartPositions) {
+      // Move all selected nodes together
+      const dx = cp.x - info.startX
+      const dy = cp.y - info.startY
+      info.nodeStartPositions.forEach((pos, id) => {
+        upNode(id, { x: pos.x + dx, y: pos.y + dy })
+      })
     } else if (info.type === 'resize' && info.id) {
       const dx = cp.x - info.startX, dy = cp.y - info.startY, h = info.handle!
       let nx = info.ox!, ny = info.oy!, nw = info.ow!, nh = info.oh!
@@ -244,10 +298,29 @@ export default function DiagramCreator() {
       if (h.includes('w')) { nx = info.ox! + dx; nw = Math.max(40, info.ow! - dx) }
       if (h.includes('n')) { ny = info.oy! + dy; nh = Math.max(20, info.oh! - dy) }
       upNode(info.id, { x: nx, y: ny, width: nw, height: nh })
+    } else if (info.type === 'select') {
+      // Update selection box
+      const x = Math.min(info.startX, cp.x)
+      const y = Math.min(info.startY, cp.y)
+      const w = Math.abs(cp.x - info.startX)
+      const h = Math.abs(cp.y - info.startY)
+      setSelectionBox({ x, y, w, h })
+      // Select nodes within the box
+      const selectedInBox = new Set<string>()
+      nodes.forEach(n => {
+        if (n.x >= x && n.x + n.width <= x + w && n.y >= y && n.y + n.height <= y + h) {
+          selectedInBox.add(n.id)
+        }
+      })
+      setSelIds(selectedInBox)
     }
-  }, [toCanvas, upNode])
+  }, [toCanvas, upNode, nodes])
 
-  const handleMouseUp = useCallback(() => { dragging.current = false; dragInfo.current = null }, [])
+  const handleMouseUp = useCallback(() => { 
+    dragging.current = false
+    dragInfo.current = null
+    setSelectionBox(null)
+  }, [])
 
   const handleWheel = useCallback((e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault()
@@ -318,6 +391,20 @@ export default function DiagramCreator() {
     setSvgInput(''); setSvgModal(false)
   }, [svgInput, addNode])
 
+  const editSVGNode = useCallback(() => {
+    if (!selId) return
+    const node = nodes.find(n => n.id === selId)
+    if (!node || node.shape !== 'svg') return
+    setSvgInput(node.svgContent || '')
+    setSvgModal(true)
+  }, [selId, nodes])
+
+  const updateSVGNode = useCallback(() => {
+    if (!selId || !svgInput.trim()) return
+    upNode(selId, { svgContent: svgInput.trim() })
+    setSvgInput(''); setSvgModal(false)
+  }, [selId, svgInput, upNode])
+
   const sortedNodes = [...nodes].sort((a, b) => a.zIndex - b.zIndex)
 
   const renderShape = (node: DiagramNode) => {
@@ -325,11 +412,35 @@ export default function DiagramCreator() {
     if (shape === 'circle') return <ellipse cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
     if (shape === 'diamond') return <polygon points={`${w / 2},0 ${w},${h / 2} ${w / 2},${h} 0,${h / 2}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
     if (shape === 'svg' && node.svgContent) {
-      return (
-        <foreignObject width={w} height={h}>
-          <div style={{ width: w, height: h, overflow: 'hidden' }} dangerouslySetInnerHTML={{ __html: node.svgContent }} />
-        </foreignObject>
-      )
+      // Parse SVG and apply transform for scaling
+      try {
+        const parser = new DOMParser()
+        const doc = parser.parseFromString(node.svgContent, 'image/svg+xml')
+        const svgEl = doc.querySelector('svg')
+        if (svgEl) {
+          // Set viewBox if not present
+          if (!svgEl.getAttribute('viewBox')) {
+            const svgW = svgEl.getAttribute('width') || w
+            const svgH = svgEl.getAttribute('height') || h
+            svgEl.setAttribute('viewBox', `0 0 ${parseFloat(svgW as string)} ${parseFloat(svgH as string)}`)
+          }
+          svgEl.setAttribute('width', String(w))
+          svgEl.setAttribute('height', String(h))
+          svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+        }
+        const serialized = new XMLSerializer().serializeToString(doc)
+        return (
+          <foreignObject width={w} height={h}>
+            <div style={{ width: w, height: h, display: 'flex', alignItems: 'center', justifyContent: 'center' }} dangerouslySetInnerHTML={{ __html: serialized }} />
+          </foreignObject>
+        )
+      } catch (e) {
+        return (
+          <foreignObject width={w} height={h}>
+            <div style={{ width: w, height: h, overflow: 'hidden' }} dangerouslySetInnerHTML={{ __html: node.svgContent }} />
+          </foreignObject>
+        )
+      }
     }
     if (shape === 'text') return null
     return <rect width={w} height={h} rx={borderRadius} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
@@ -448,39 +559,49 @@ export default function DiagramCreator() {
             })()}
 
             {/* Nodes */}
-            {sortedNodes.map(node => (
-              <g key={node.id} transform={`translate(${node.x},${node.y})`} data-node-id={node.id}
-                style={{ cursor: tool === 'select' ? 'move' : 'crosshair' }}
-                onDoubleClick={e => { e.stopPropagation(); setEditLabel(node.id) }}>
-                {renderShape(node)}
-                {node.shape !== 'text' && (
-                  <text x={node.width / 2} y={node.height / 2} textAnchor="middle" dominantBaseline="central"
-                    fill={node.fontColor} fontSize={node.fontSize} fontWeight={node.fontWeight}
-                    style={{ fontFamily: '"JetBrains Mono", monospace', userSelect: 'none', pointerEvents: 'none' }}>
-                    {node.label || (selId === node.id ? '' : '')}
-                  </text>
-                )}
-                {node.shape === 'text' && (
-                  <text x={node.width / 2} y={node.height / 2} textAnchor="middle" dominantBaseline="central"
-                    fill={node.fontColor} fontSize={node.fontSize} fontWeight={node.fontWeight}
-                    style={{ fontFamily: '"JetBrains Mono", monospace', userSelect: 'none', pointerEvents: 'none' }}>
-                    {node.label}
-                  </text>
-                )}
-                {selId === node.id && (
-                  <>
-                    <rect x={-3} y={-3} width={node.width + 6} height={node.height + 6} fill="none" stroke="#d4b84a" strokeWidth={1} strokeDasharray="5,3" rx={3} style={{ pointerEvents: 'none' }} />
-                    {HANDLES.map(h => (
-                      <rect key={h.id} data-handle={h.id} x={node.width * h.cx - 4} y={node.height * h.cy - 4} width={8} height={8}
-                        fill="#d4b84a" stroke="#09090f" strokeWidth={1} rx={1} style={{ cursor: CURSORS[h.id] }} />
-                    ))}
-                  </>
-                )}
-                {connecting === node.id && (
-                  <circle cx={node.width / 2} cy={node.height / 2} r={Math.max(node.width, node.height) / 2 + 6} fill="none" stroke="#d4b84a" strokeWidth={2} strokeDasharray="4,2" style={{ pointerEvents: 'none' }} />
-                )}
-              </g>
-            ))}
+            {sortedNodes.map(node => {
+              const isSelected = selIds.has(node.id)
+              return (
+                <g key={node.id} transform={`translate(${node.x},${node.y})`} data-node-id={node.id}
+                  style={{ cursor: tool === 'select' ? 'move' : 'crosshair' }}
+                  onDoubleClick={e => { e.stopPropagation(); setEditLabel(node.id) }}>
+                  {renderShape(node)}
+                  {node.shape !== 'text' && (
+                    <text x={node.width / 2} y={node.height / 2} textAnchor="middle" dominantBaseline="central"
+                      fill={node.fontColor} fontSize={node.fontSize} fontWeight={node.fontWeight}
+                      style={{ fontFamily: '"JetBrains Mono", monospace', userSelect: 'none', pointerEvents: 'none' }}>
+                      {node.label || (selId === node.id ? '' : '')}
+                    </text>
+                  )}
+                  {node.shape === 'text' && (
+                    <text x={node.width / 2} y={node.height / 2} textAnchor="middle" dominantBaseline="central"
+                      fill={node.fontColor} fontSize={node.fontSize} fontWeight={node.fontWeight}
+                      style={{ fontFamily: '"JetBrains Mono", monospace', userSelect: 'none', pointerEvents: 'none' }}>
+                      {node.label}
+                    </text>
+                  )}
+                  {isSelected && selIds.size === 1 && (
+                    <>
+                      <rect x={-3} y={-3} width={node.width + 6} height={node.height + 6} fill="none" stroke="#d4b84a" strokeWidth={1} strokeDasharray="5,3" rx={3} style={{ pointerEvents: 'none' }} />
+                      {HANDLES.map(h => (
+                        <rect key={h.id} data-handle={h.id} x={node.width * h.cx - 4} y={node.height * h.cy - 4} width={8} height={8}
+                          fill="#d4b84a" stroke="#09090f" strokeWidth={1} rx={1} style={{ cursor: CURSORS[h.id] }} />
+                      ))}
+                    </>
+                  )}
+                  {isSelected && selIds.size > 1 && (
+                    <rect x={-2} y={-2} width={node.width + 4} height={node.height + 4} fill="none" stroke="#3a5a8a" strokeWidth={1} style={{ pointerEvents: 'none' }} />
+                  )}
+                  {connecting === node.id && (
+                    <circle cx={node.width / 2} cy={node.height / 2} r={Math.max(node.width, node.height) / 2 + 6} fill="none" stroke="#d4b84a" strokeWidth={2} strokeDasharray="4,2" style={{ pointerEvents: 'none' }} />
+                  )}
+                </g>
+              )
+            })}
+            {/* Selection box */}
+            {selectionBox && (
+              <rect x={selectionBox.x} y={selectionBox.y} width={selectionBox.w} height={selectionBox.h} fill="rgba(58, 90, 138, 0.15)" stroke="#3a5a8a" strokeWidth={1} strokeDasharray="4,2" />
+            )}
           </g>
         </svg>
 
@@ -493,6 +614,11 @@ export default function DiagramCreator() {
               <Sec title="Label">
                 <input value={selNode.label} onChange={e => upNode(selNode.id, { label: e.target.value })} style={IS} placeholder="Node label..." />
               </Sec>
+              {selNode.shape === 'svg' && (
+                <Sec title="SVG Code">
+                  <button onClick={editSVGNode} style={{ ...MB, width: '100%' }}>Edit SVG Code</button>
+                </Sec>
+              )}
               <Sec title="Fill Color">
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                   <input type="color" value={selNode.fill === 'transparent' ? '#1b1b2e' : selNode.fill}
@@ -551,7 +677,27 @@ export default function DiagramCreator() {
                   <button onClick={sendBack} style={MB}>Back</button>
                 </div>
               </Sec>
-              <button onClick={delSelected} style={{ ...MB, width: '100%', background: '#200d10', color: '#e05050', borderColor: '#3a1520', marginTop: 4 }}>Delete Node</button>
+              {selIds.size === 1 && (
+                <button onClick={delSelected} style={{ ...MB, width: '100%', background: '#200d10', color: '#e05050', borderColor: '#3a1520', marginTop: 4 }}>Delete Node</button>
+              )}
+              {selIds.size > 1 && (
+                <button onClick={delSelected} style={{ ...MB, width: '100%', background: '#200d10', color: '#e05050', borderColor: '#3a1520', marginTop: 4 }}>Delete Selected ({selIds.size})</button>
+              )}
+            </>
+          )}
+
+          {!selNode && !selConn && selIds.size > 1 && (
+            <>
+              <Sec title="Selection">
+                <div style={{ fontSize: 11, color: '#6a7a8a', marginBottom: 8 }}>{selIds.size} objects selected</div>
+              </Sec>
+              <Sec title="Layers">
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button onClick={bringFront} style={MB}>Front</button>
+                  <button onClick={sendBack} style={MB}>Back</button>
+                </div>
+              </Sec>
+              <button onClick={delSelected} style={{ ...MB, width: '100%', background: '#200d10', color: '#e05050', borderColor: '#3a1520', marginTop: 4 }}>Delete Selected ({selIds.size})</button>
             </>
           )}
 
@@ -592,7 +738,7 @@ export default function DiagramCreator() {
             </>
           )}
 
-          {!selNode && !selConn && (
+          {!selNode && !selConn && selIds.size === 0 && (
             <div style={{ color: '#1e2835', fontSize: 11, textAlign: 'center', paddingTop: 40, lineHeight: 1.8 }}>
               Select an object<br />to edit properties<br /><br />
               <span style={{ fontSize: 10, color: '#1a2030' }}>Dbl-click node<br />to edit label</span>
@@ -604,22 +750,28 @@ export default function DiagramCreator() {
             <div>V — Select &nbsp; C — Connect</div>
             <div>Del — Delete selected</div>
             <div>Scroll — Zoom</div>
-            <div>Drag canvas — Pan</div>
+            <div>Shift/Space + Drag — Pan</div>
+            <div>Drag background — Multi-select</div>
+            <div>Ctrl + Click — Toggle selection</div>
             <div>Dbl-click — Edit label</div>
           </div>
         </div>
       </div>
 
-      {/* SVG Paste Modal */}
+      {/* SVG Paste/Edit Modal */}
       {svgModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
           <div style={{ background: '#0e0e1a', border: '1px solid #252535', borderRadius: 8, padding: 24, width: 480, maxWidth: '90vw' }}>
-            <div style={{ fontWeight: 700, fontSize: 13, color: '#d4b84a', marginBottom: 12 }}>Paste SVG Code</div>
+            <div style={{ fontWeight: 700, fontSize: 13, color: '#d4b84a', marginBottom: 12 }}>{selNode?.shape === 'svg' ? 'Edit SVG Code' : 'Paste SVG Code'}</div>
             <textarea value={svgInput} onChange={e => setSvgInput(e.target.value)} placeholder="Paste SVG code here..."
               style={{ ...IS, height: 200, resize: 'vertical', fontSize: 11 }} />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
-              <button onClick={() => setSvgModal(false)} style={MB}>Cancel</button>
-              <button onClick={addSVGNode} style={{ ...MB, background: '#d4b84a', color: '#0a0a12', borderColor: '#d4b84a', fontWeight: 700 }}>Add to Canvas</button>
+              <button onClick={() => { setSvgModal(false); setSvgInput('') }} style={MB}>Cancel</button>
+              {selNode?.shape === 'svg' ? (
+                <button onClick={updateSVGNode} style={{ ...MB, background: '#d4b84a', color: '#0a0a12', borderColor: '#d4b84a', fontWeight: 700 }}>Update SVG</button>
+              ) : (
+                <button onClick={addSVGNode} style={{ ...MB, background: '#d4b84a', color: '#0a0a12', borderColor: '#d4b84a', fontWeight: 700 }}>Add to Canvas</button>
+              )}
             </div>
           </div>
         </div>
