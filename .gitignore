@@ -1,65 +1,53 @@
-# 📦 Dependencies
+```
+# Dependencies
 node_modules/
 
-# 🏗️ Build outputs (Vite default)
+# Build artifacts
 dist/
-dist-ssr/
 build/
+target/
 
-# 🔑 Environment variables (commit .env.example instead)
+# Logs
+*.log
+
+# Environment variables
 .env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
+*.env.*
 
-# 💻 IDE & Editors
-.vscode/*
-!.vscode/extensions.json
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE files
+.vscode/
 .idea/
 *.swp
 *.swo
-*~
 
-# 🍎 OS files
+# OS files
 .DS_Store
 Thumbs.db
-Desktop.ini
-ehthumbs.db
 
-# 🧪 Testing & Coverage
+# Testing
 coverage/
 .nyc_output/
+*.coverage
 
-# 📜 Logs
-*.log
+# Temporary files
+*.tmp
+*.temp
+
+# Package manager
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
 
-# 🌐 TanStack Router (auto-generated route tree)
-src/routeTree.gen.ts
-routeTree.gen.ts
-
-# ⚡ TanStack Start / Server build cache
-.tanstack/
-.output/
-.server/
-
-# ⚙️ Cache & Build artifacts
-*.tsbuildinfo
-.eslintcache
-.stylelintcache
+# Vite specific
 .vite/
 
-# 📦 Optional: If using package manager-specific lock files, UNCOMMENT ONLY ONE
-# package-lock.json
-# yarn.lock
-# pnpm-lock.yaml
-/.claude
-/.agents
-/AGENTS.md
-/CLAUDE.local.md
-/netlify.toml
+# TypeScript
+*.tsbuildinfo
+```
