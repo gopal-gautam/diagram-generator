@@ -525,7 +525,7 @@ export default function DiagramCreator() {
               const lp = labelMid(fn, tn)
               const isSel = selConnId === c.id
               return (
-                <g key={c.id} data-is-conn="1" onClick={(e) => { e.stopPropagation(); setSelConnId(c.id); setSelId(null) }}>
+                <g key={c.id} data-is-conn="1" onClick={(e) => { e.stopPropagation(); setSelConnId(c.id); setSelIds(new Set()) }}>
                   <path d={d} fill="none" stroke="transparent" strokeWidth={14} style={{ cursor: 'pointer' }} />
                   <path d={d} fill="none" stroke={isSel ? '#d4b84a' : c.color} strokeWidth={c.strokeWidth}
                     strokeDasharray={isSel ? '6,3' : undefined}
