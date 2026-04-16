@@ -1,0 +1,25 @@
+@import "tailwindcss" source("../");
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #09090f;
+  font-family: "JetBrains Mono", monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+input[type="range"] {
+  accent-color: #d4b84a;
+}
+
+input[type="color"] {
+  cursor: pointer;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0c0c16; }
+::-webkit-scrollbar-thumb { background: #252535; border-radius: 3px; }
