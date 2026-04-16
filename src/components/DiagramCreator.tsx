@@ -1,8 +1,8 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react'
 
-type Tool = 'select' | 'connect' | 'rect' | 'circle' | 'diamond' | 'text' | 'triangle' | 'hexagon' | 'line' | 'draw'
+type Tool = 'select' | 'connect' | 'rect' | 'circle' | 'diamond' | 'text' | 'triangle' | 'line' | 'draw' | 'cloud' | 'parallelogram'
 type LineStyle = 'straight' | 'curved' | 'elbow'
-type NodeShape = 'rect' | 'circle' | 'diamond' | 'svg' | 'text' | 'triangle' | 'hexagon'
+type NodeShape = 'rect' | 'circle' | 'diamond' | 'svg' | 'text' | 'triangle' | 'cloud' | 'parallelogram'
 
 interface DiagramNode {
   id: string
@@ -40,6 +40,7 @@ interface FreeLine {
   points: { x: number; y: number }[]
   color: string
   strokeWidth: number
+  selected?: boolean
 }
 
 interface Viewport { x: number; y: number; scale: number }
@@ -164,8 +165,8 @@ export default function DiagramCreator() {
     const maxZ = nodes.reduce((m, n) => Math.max(m, n.zIndex), 0)
     const defaults: DiagramNode = {
       id, shape, x, y,
-      width: shape === 'circle' || shape === 'hexagon' ? 100 : shape === 'text' ? 140 : 160,
-      height: shape === 'circle' || shape === 'hexagon' ? 100 : shape === 'text' ? 36 : shape === 'diamond' || shape === 'triangle' ? 80 : 80,
+      width: shape === 'circle' ? 100 : shape === 'text' ? 140 : shape === 'cloud' ? 140 : 160,
+      height: shape === 'circle' ? 100 : shape === 'text' ? 36 : shape === 'diamond' || shape === 'triangle' ? 80 : shape === 'cloud' ? 90 : shape === 'parallelogram' ? 70 : 80,
       label: shape === 'text' ? 'Label' : '',
       fill: shape === 'text' ? 'transparent' : '#1b1b2e',
       stroke: shape === 'text' ? 'transparent' : '#3a4a6a',
@@ -238,13 +239,29 @@ export default function DiagramCreator() {
     if (e.button !== 0) return
     const cp = toCanvas(e.clientX, e.clientY)
     const target = e.target as Element
+    // Check for free line hit
+    let hitFreeLineId: string | null = null
+    freeLines.forEach(line => {
+      if (line.points.some(p => Math.hypot(p.x - cp.x, p.y - cp.y) < 10)) {
+        hitFreeLineId = line.id
+      }
+    })
     const nodeId = target.closest('[data-node-id]')?.getAttribute('data-node-id') ?? null
     const handleType = target.getAttribute('data-handle')
     const isConn = target.closest('[data-is-conn]') !== null
+    const isFreeLine = target.closest('[data-free-line]') !== null
     const isCtrl = e.ctrlKey || e.metaKey
     const isShift = e.shiftKey || e.key === ' '
 
     if (tool === 'select') {
+      if (hitFreeLineId) {
+        // Select free line
+        setSelIds(new Set([hitFreeLineId]))
+        setSelConnId(null)
+        dragInfo.current = { type: 'node', id: hitFreeLineId, startX: cp.x, startY: cp.y }
+        dragging.current = true
+        return
+      }
       if (handleType && selIds.size === 1) {
         const node = nodes.find(n => n.id === selId)!
         dragInfo.current = { type: 'resize', id: selId, handle: handleType, startX: cp.x, startY: cp.y, ox: node.x, oy: node.y, ow: node.width, oh: node.height }
@@ -305,7 +322,7 @@ export default function DiagramCreator() {
           setConnecting(null); setTool('select')
         }
       } else { setConnecting(null) }
-    } else if (['rect', 'circle', 'diamond', 'triangle', 'hexagon'].includes(tool)) {
+    } else if (['rect', 'circle', 'diamond', 'triangle', 'cloud', 'parallelogram'].includes(tool)) {
       addNode(tool as NodeShape, cp.x - 80, cp.y - 40)
       setTool('select')
     } else if (tool === 'text') {
@@ -360,7 +377,7 @@ export default function DiagramCreator() {
       })
       setSelIds(selectedInBox)
     } else if (info.type === 'line' && info.lineStartPoint) {
-      // Live line preview
+      // Create a free line on mouse up, just show preview for now
     } else if (info.type === 'draw' && info.id) {
       setFreeLines(prev => prev.map(line =>
         line.id === info.id ? { ...line, points: [...line.points, { x: cp.x, y: cp.y }] } : line
@@ -370,9 +387,25 @@ export default function DiagramCreator() {
 
   const handleMouseUp = useCallback(() => { 
     dragging.current = false
+    // If we were drawing a line, finalize it as a FreeLine
+    if (dragInfo.current?.type === 'line' && dragInfo.current.lineStartPoint) {
+      const startPoint = dragInfo.current.lineStartPoint
+      const endPoint = mPos
+      // Only create line if it has some length
+      if (Math.hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y) > 5) {
+        const newLine: FreeLine = { 
+          id: uid(), 
+          points: [startPoint, endPoint], 
+          color: '#3a5a8a', 
+          strokeWidth: 2 
+        }
+        setFreeLines(prev => [...prev, newLine])
+        setSelIds(new Set([newLine.id]))
+      }
+    }
     dragInfo.current = null
     setSelectionBox(null)
-  }, [])
+  }, [mPos])
 
   const handleWheel = useCallback((e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault()
@@ -462,11 +495,26 @@ export default function DiagramCreator() {
   const renderShape = (node: DiagramNode) => {
     const { shape, width: w, height: h, fill, stroke, strokeWidth, borderRadius } = node
     if (shape === 'circle') return <ellipse cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
-    if (shape === 'diamond') return <polygon points={`${w / 2},0 ${w},${h / 2} ${w / 2},${h} 0,${h / 2}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+    if (shape === 'diamond') {
+      // Adjust edge points for diamond to ensure connectors touch properly
+      return <polygon points={`${w / 2},0 ${w},${h / 2} ${w / 2},${h} 0,${h / 2}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+    }
     if (shape === 'triangle') return <polygon points={`${w / 2},0 ${w},${h} 0,${h}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
-    if (shape === 'hexagon') {
-      const hw = w / 2, hh = h / 2
-      return <polygon points={`${hw},0 ${w * 0.75},${hh} ${w * 0.75},${h} ${hw},${h} ${w * 0.25},${h} ${w * 0.25},${hh} 0,${hh}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+    if (shape === 'cloud') {
+      // Cloud shape using multiple arcs
+      const r = Math.min(w, h) / 2
+      return (
+        <g>
+          <ellipse cx={w * 0.3} cy={h * 0.5} rx={w * 0.25} ry={h * 0.35} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+          <ellipse cx={w * 0.5} cy={h * 0.35} rx={w * 0.3} ry={h * 0.3} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+          <ellipse cx={w * 0.7} cy={h * 0.5} rx={w * 0.25} ry={h * 0.35} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+          <ellipse cx={w * 0.45} cy={h * 0.6} rx={w * 0.35} ry={h * 0.3} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+        </g>
+      )
+    }
+    if (shape === 'parallelogram') {
+      const offset = w * 0.2
+      return <polygon points={`${offset},0 ${w},${h} ${w - offset},${h} 0,0`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
     }
     if (shape === 'svg' && node.svgContent) {
       // Parse SVG and apply transform for scaling
@@ -527,7 +575,8 @@ export default function DiagramCreator() {
           {toolBtn('circle', 'Circle')}
           {toolBtn('diamond', 'Diamond')}
           {toolBtn('triangle', 'Triangle')}
-          {toolBtn('hexagon', 'Hexagon')}
+          {toolBtn('cloud', 'Cloud')}
+          {toolBtn('parallelogram', 'Parallelogram')}
           {toolBtn('text', 'Text')}
           {toolBtn('line', 'Line')}
           {toolBtn('draw', 'Draw')}
@@ -628,16 +677,31 @@ export default function DiagramCreator() {
             {freeLines.map(line => {
               if (line.points.length < 2) return null
               const d = line.points.map((p, i) => (i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`)).join(' ')
-              return <path key={line.id} d={d} fill="none" stroke={line.color} strokeWidth={line.strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+              const isSelected = selIds.has(line.id)
+              return (
+                <g key={line.id} data-free-line="1">
+                  <path d={d} fill="none" stroke={isSelected ? '#d4b84a' : line.color} strokeWidth={isSelected ? line.strokeWidth + 2 : line.strokeWidth} strokeLinecap="round" strokeLinejoin="round" 
+                    style={{ cursor: tool === 'select' ? 'pointer' : 'default' }} />
+                  {isSelected && (
+                    <path d={d} fill="none" stroke="#d4b84a" strokeWidth={1} strokeDasharray="4,2" strokeLinecap="round" strokeLinejoin="round" style={{ pointerEvents: 'none' }} />
+                  )}
+                </g>
+              )
             })}
 
             {/* Nodes */}
             {sortedNodes.map(node => {
               const isSelected = selIds.has(node.id)
+              // For text nodes, make the entire bounding box clickable for easier selection
+              const isTextShape = node.shape === 'text'
               return (
                 <g key={node.id} transform={`translate(${node.x},${node.y})`} data-node-id={node.id}
                   style={{ cursor: tool === 'select' ? 'move' : 'crosshair' }}
                   onDoubleClick={e => { e.stopPropagation(); setEditLabel(node.id) }}>
+                  {isTextShape && (
+                    // Invisible hit box for easier text selection
+                    <rect x={0} y={0} width={node.width} height={node.height} fill="transparent" stroke="none" style={{ pointerEvents: 'all', cursor: 'move' }} />
+                  )}
                   {renderShape(node)}
                   {node.shape !== 'text' && (
                     <text x={node.width / 2} y={node.height / 2} textAnchor="middle" dominantBaseline="central"
@@ -681,6 +745,32 @@ export default function DiagramCreator() {
         {/* Properties Panel */}
         <div style={{ width: 220, background: '#0c0c16', borderLeft: '1px solid #1a1a28', overflowY: 'auto', padding: '12px 10px', flexShrink: 0 }}>
           <div style={{ fontSize: 9, fontWeight: 700, color: '#2a3445', letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 14 }}>Properties</div>
+
+          {(() => {
+            // Check if a free line is selected
+            const selectedFreeLine = freeLines.find(fl => selIds.has(fl.id)) || null
+            if (selectedFreeLine) {
+              return (
+                <>
+                  <Sec title="Color">
+                    <input type="color" value={selectedFreeLine.color}
+                      onChange={e => setFreeLines(prev => prev.map(l => l.id === selectedFreeLine.id ? { ...l, color: e.target.value } : l))}
+                      style={{ width: 28, height: 22, border: 'none', background: 'none', cursor: 'pointer' }} />
+                  </Sec>
+                  <Sec title="Width">
+                    <input type="range" min={1} max={10} step={0.5} value={selectedFreeLine.strokeWidth}
+                      onChange={e => setFreeLines(prev => prev.map(l => l.id === selectedFreeLine.id ? { ...l, strokeWidth: +e.target.value } : l))}
+                      style={{ width: '100%', accentColor: '#d4b84a' }} />
+                  </Sec>
+                  <button onClick={() => {
+                    setFreeLines(prev => prev.filter(l => l.id !== selectedFreeLine.id))
+                    setSelIds(new Set())
+                  }} style={{ ...MB, width: '100%', background: '#200d10', color: '#e05050', borderColor: '#3a1520', marginTop: 4 }}>Delete Line</button>
+                </>
+              )
+            }
+            return null
+          })()}
 
           {selNode && (
             <>
@@ -748,6 +838,11 @@ export default function DiagramCreator() {
                 <div style={{ display: 'flex', gap: 4 }}>
                   <button onClick={bringFront} style={MB}>Front</button>
                   <button onClick={sendBack} style={MB}>Back</button>
+                </div>
+              </Sec>
+              <Sec title="Actions">
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button onClick={duplicateSelected} style={{ ...MB, background: '#1a2830', color: '#6ad4b8' }}>Duplicate</button>
                 </div>
               </Sec>
               {selIds.size === 1 && (
